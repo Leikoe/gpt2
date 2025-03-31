@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from torch import optim
 from main import Gpt2
 from transformers import GPT2Tokenizer
+import time
+
 
 tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 
@@ -28,32 +30,39 @@ class DataloaderLite():
         return x, y
 
 if __name__ == "__main__":
-    device = "cuda"
+    device = "cuda:0"
 
-    B, T = 64, 256
+    B, T = 32, 1024
     train_loader = DataloaderLite("input.txt", B, T)
 
-
-    model = Gpt2(50257, 256, 12, 12, 768)
+    model = Gpt2(50257, T, 12, 12, 768)
+    model.compile()
     model.to(torch.bfloat16)
-    model.cuda()
+    model.to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=0.001)
 
-    for epoch in range(10):
+    losses = []
+    for epoch in range(100):
         for batch in range(train_loader.len // (B * T)):
+            start = time.monotonic()
             x, y = train_loader.next()
             x, y = x.to(device), y.to(device)
-            # print("-" * 10)
-            # print(f"'{tokenizer.decode(x[0].tolist())}'")
-            # print(f"'{tokenizer.decode(y[0].tolist())}'")
             preds = model(x)
             loss = F.cross_entropy(preds.reshape(-1, preds.shape[-1]), y.reshape(-1))
-            print(f"loss: {loss.item()}")
+            cpu_loss = loss.item() # implicit cuda synchronize
+            end = time.monotonic()
+            print(f"{epoch=} | {batch=} | loss: {cpu_loss} | {(B * T) / (end - start)} tok/s")
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            losses.append(cpu_loss)
+
+    import matplotlib.pyplot as plt
+    plt.plot(losses)
+    plt.savefig('plot.png')
 
 
     # inference:
@@ -63,10 +72,9 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(42)
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     prompt = "I shall"
-    tokens = tokenizer(prompt, return_tensors='pt')["input_ids"].cuda().repeat(n_streams, 1)
+    tokens = tokenizer(prompt, return_tensors='pt')["input_ids"].to(device).repeat(n_streams, 1)
     print("prompt:", tokens)
 
-    import time
     with torch.inference_mode():
         start = time.monotonic()
         for _ in range(n_new_tokens):
